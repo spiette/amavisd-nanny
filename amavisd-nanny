@@ -87,9 +87,11 @@ sub fmt_age($$$) {
 
 # main program starts here
   my($normal_termination) = 0;
+  my($forking);
   $SIG{INT} = sub { die "\n" };  # do the END code block when interrupted
   while (@ARGV) {
     my($opt) = shift @ARGV;
+    if ($opt eq '-d' ) { $forking = 1; next };
     my($val) = shift @ARGV;
     if ($opt eq '-w' && $val =~ /^\+?\d+(?:\.\d*)?\z/) { $wakeuptime = $val }
     elsif ($opt eq '-c' && $val =~ /^[+-]?\d+\z/) { $repeatcount = $val }
@@ -113,8 +115,19 @@ States legend:
   sp space indicates idle (elapsed bar is showing dots)
 
 EOD
-      die "Usage: $0 [-c <count>] [-w <wait-interval>]\n";
+      die "Usage: $0 [-d] [-c <count>] [-w <wait-interval>]\n";
     }
+  }
+
+  if (defined($forking) and $forking) {
+    print('We plan to fork');
+    my $pid = fork();
+    if (! defined($pid)) {
+        die('Unable to fork!');
+    } elsif ($pid) {
+        wait();
+        exit(0);
+    } # else this is a child running
   }
   print <<'EOD';
 process-id task-id     elapsed in    elapsed-bar (dots indicate idle)
