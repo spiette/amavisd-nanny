@@ -49,8 +49,12 @@ use POSIX qw(strftime);
 use Time::HiRes ();
 use BerkeleyDB;
 
+$ENV{'LC_TIME'}='en_CA.utf8';
+my $lockfile = '/var/run/amavisd/amavisd-nanny.lock';
+my $pidfile = '/var/run/amavisd/amavisd-nanny.pid';
+
 # $OUTPUT_AUTOFLUSH
-$|=1;
+#$|=1;
 
 use vars qw($VERSION);  $VERSION = 1.400;
 
@@ -61,9 +65,11 @@ my($activettl) = 10*60; # stuck active children are sent a SIGTERM
 
 my($dbfile) = 'nanny.db';
 my($db_home) =  # DB databases directory
-  defined $ENV{'AMAVISD_DB_HOME'} ? $ENV{'AMAVISD_DB_HOME'} : '/var/spool/amavis/db';
+defined $ENV{'AMAVISD_DB_HOME'} ? $ENV{'AMAVISD_DB_HOME'} : '/var/spool/amavis/db';
 my($wakeuptime) = 2;  # -w, sleep time in seconds, may be fractional
 my($repeatcount);     # -c, repeat count (when defined)
+
+my($forked) = 0;
 
 sub fmt_age($$$) {
     my($t,$state_bar,$idling) = @_;
@@ -91,7 +97,10 @@ sub fmt_age($$$) {
 # main program starts here
 my($normal_termination) = 0;
 my($forking);
-$SIG{INT} = sub { die "\n" };  # do the END code block when interrupted
+$SIG{INT} = sub { die "\n" };  # do the END code block when interrupted (2)
+$SIG{QUIT} = sub { die "\n" };  # do the END code block when interrupted (3)
+$SIG{PIPE} = sub { die "\n" };  # do the END code block when interrupted (13)
+$SIG{TERM} = sub { die "\n" };  # do the END code block when interrupted (15)
 while (@ARGV) {
     my($opt) = shift @ARGV;
     if ($opt eq '-d' ) { $forking = 1; next };
@@ -122,8 +131,6 @@ EOD
     }
 }
 
-my $lockfile = '/var/run/amavisd/amavisd-nanny.lock';
-my $pidfile = '/var/run/amavisd/amavisd-nanny.pid';
 if ( -f $lockfile ) {
     die 'Lock file exists';
 } else {
@@ -135,17 +142,22 @@ if (defined($forking) and $forking) {
     if (!defined($process_id)) {
         die('Unable to fork!');
     } elsif ($process_id) {
-        wait();
+        waitpid($process_id,0);
         exit(0);
     } # else this is a child running
-    if ( my $child = fork() ) {
+    unless (fork()) {
+        $forked = 1;
         open PID, ">$pidfile";
         print PID $$;
         close(PID);
+    } else {
+        exit(0);
     }
 }
+
 open LOG, '>>/var/log/amavisd/amavisd-nanny.log' or die $!;
 LOG->autoflush(1);
+select(LOG);
 print LOG <<'EOD';
 process-id task-id     elapsed in    elapsed-bar (dots indicate idle)
            or state   idle or busy
@@ -173,7 +185,7 @@ for (;;) {
         $db = BerkeleyDB::Hash->new(-Filename => $dbfile, -Env => $env);
         defined $db or die "BDB no dbN 1: $BerkeleyDB::Error $!";
     }
-    $| = 0;
+    LOG->autoflush(0);
     my(%proc_timestamp, %proc_state, %proc_task_id);
     my($stat,$key,$val); my($now);
     my($eval_stat,$interrupt); $interrupt = '';
@@ -189,7 +201,8 @@ for (;;) {
             $cursor = $db->db_cursor;  # obtain read lock
             defined $cursor or die "db_cursor error: $BerkeleyDB::Error";
             $now = Time::HiRes::time; local($1,$2);
-            my($now_utc_iso8601) = strftime("%Y%m%dT%H%M%S",gmtime(int($now)));
+            my($now_utc_iso8601) = strftime("%Y-%m-%dT%H:%M:%S",gmtime(int($now)));
+            #print LOG "$now_utc_iso8601\n";
             while ( ($stat=$cursor->c_get($key,$val,DB_NEXT)) == 0 ) {
                 if ($val !~ /^(\d+(?:\.\d*)?) (.*?) *\z/s) {
                     print LOG "Bad db entry: $key, $val\n";
@@ -223,6 +236,7 @@ for (;;) {
         }
     }
     my(@to_be_removed,@killed);
+    print LOG strftime("%b %d %H:%M:%S", localtime(time())) . "\n";
     for my $pid (sort {$a<=>$b} keys %proc_timestamp) {
         $proc_state{$pid} = ' '  if $proc_state{$pid} eq '';
         my($idling) = $proc_task_id{$pid} eq '' &&
@@ -302,6 +316,7 @@ for (;;) {
         printf LOG ("Waiting for the process to terminate: %s\n",
             join(', ',@killed))  if @killed;
     }
+    LOG->autoflush(1);
     last  if defined $repeatcount && $repeatcount <= 0;
     Time::HiRes::sleep($wakeuptime)  if $wakeuptime > 0;
 } # forever
@@ -312,11 +327,13 @@ END {
         $cursor->c_close  if defined $cursor;  # ignoring status
         $db->db_close==0 or die "BDB db_close error: $BerkeleyDB::Error $!";
     }
-    if ( -e $pidfile) {
-        unlink($pidfile);
+    if (($forking and $forked) or not $forking) {
+        if ( -e $pidfile) {
+            unlink($pidfile);
+        }
+        if ( -e $lockfile) {
+            unlink($lockfile);
+        }
+        close(LOG);
     }
-    if ( -e $lockfile) {
-        unlink($lockfile);
-    }
-    close(LOG);
 }
