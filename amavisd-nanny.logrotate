@@ -1,0 +1,8 @@
+/var/log/amavisd/amavisd-nanny.log {
+        missingok
+        notifempty
+        create 644 amavisd amavisd
+        postrotate
+                service amavisd-nanny restart
+        endscript
+}
