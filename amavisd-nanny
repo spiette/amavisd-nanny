@@ -94,9 +94,20 @@ sub fmt_age($$$) {
     $str . ' ' . $bar;
 };
 
+sub openlog() {
+    if (fileno LOG) {
+        close(LOG);
+    }
+    open LOG, '>>/var/log/amavisd/amavisd-nanny.log' or die $!;
+    LOG->autoflush(1);
+    select(LOG);
+}
+
+
 # main program starts here
 my($normal_termination) = 0;
 my($forking);
+$SIG{HUP} = openlog();
 $SIG{INT} = sub { die "\n" };  # do the END code block when interrupted (2)
 $SIG{QUIT} = sub { die "\n" };  # do the END code block when interrupted (3)
 $SIG{PIPE} = sub { die "\n" };  # do the END code block when interrupted (13)
@@ -155,9 +166,7 @@ if (defined($forking) and $forking) {
     }
 }
 
-open LOG, '>>/var/log/amavisd/amavisd-nanny.log' or die $!;
-LOG->autoflush(1);
-select(LOG);
+openlog();
 print LOG <<'EOD';
 process-id task-id     elapsed in    elapsed-bar (dots indicate idle)
            or state   idle or busy
